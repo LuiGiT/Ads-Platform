@@ -28,7 +28,12 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
+        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image URI
+        run: |
+          echo "IMAGE_URI=${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}" >> $GITHUB_ENV
 
       - name: Build Docker image
         run: |
@@ -37,14 +42,10 @@ jobs:
             -t $ECR_REPOSITORY:${{ github.sha }} .
 
       - name: Tag Docker image
-        run: |
-          docker tag $ECR_REPOSITORY:${{ github.sha }} \
-          ${{ secrets.ECR_REGISTRY }}/$ECR_REPOSITORY:${{ github.sha }}
+        run: docker tag $ECR_REPOSITORY:${{ github.sha }} "$IMAGE_URI"
 
       - name: Push Docker image to ECR
-        run: |
-          docker push \
-          ${{ secrets.ECR_REGISTRY }}/$ECR_REPOSITORY:${{ github.sha }}
+        run: docker push "$IMAGE_URI"
 
       - name: Download current ECS task definition
         run: |
@@ -55,8 +56,7 @@ jobs:
 
       - name: Update ECS task definition image
         run: |
-          cat task-definition.json | jq \
-          --arg IMAGE "${{ secrets.ECR_REGISTRY }}/$ECR_REPOSITORY:${{ github.sha }}" \
+          jq --arg IMAGE "$IMAGE_URI" \
           '.containerDefinitions[0].image = $IMAGE
           | del(
               .taskDefinitionArn,
@@ -66,22 +66,15 @@ jobs:
               .compatibilities,
               .registeredAt,
               .registeredBy
-            )' \
-          > new-task-definition.json
+            )' task-definition.json > new-task-definition.json
 
       - name: Register new ECS task definition
-        run: |
-          aws ecs register-task-definition \
-            --cli-input-json file://new-task-definition.json
-
-      - name: Get latest task definition revision
         id: task-def
         run: |
-          REVISION=$(aws ecs describe-task-definition \
-            --task-definition $ECS_TASK_DEFINITION \
+          REVISION=$(aws ecs register-task-definition \
+            --cli-input-json file://new-task-definition.json \
             --query 'taskDefinition.revision' \
             --output text)
-
           echo "revision=$REVISION" >> $GITHUB_OUTPUT
 
       - name: Deploy ECS service
